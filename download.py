@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Archive media returned by Grok's Imagine asset listing via curl and exported cookies."""
-import argparse, contextlib, json, os, plistlib, shutil, subprocess, sys, time, urllib.parse
+import argparse, contextlib, json, os, plistlib, shutil, subprocess, sys, tempfile, time, urllib.parse
 from concurrent.futures import ThreadPoolExecutor
 
 HOME = os.path.expanduser("~")
@@ -66,19 +66,23 @@ def fetch_manifest():
                "&orderBy=ORDER_BY_CREATE_TIME&workspaceKind=WORKSPACE_KIND_IMAGINE_ALL")
         if token:
             url += "&pageToken=" + urllib.parse.quote(token, safe="")
-        body, err = curl(url)
-        code = body[-3:].decode()
-        if code != "200":
-            print(f"  manifest page {page+1}: HTTP {code} {err}", file=sys.stderr)
-            if code in ("401", "403"):
-                print(f"  cookie 已失效，或 UA 与导出 cookie 的浏览器不一致（当前 UA: {UA}）。\n"
-                      "  重新导出 cookie；Chrome 刚升级过就先重启 Chrome 再导出；"
-                      "不是 Chrome 的话用 --ua 传入浏览器控制台里 navigator.userAgent 的值。", file=sys.stderr)
-            elif code == "000":
-                print("  请求未完成或传输失败，请查看上面的 curl 错误。需要代理时先设置 HTTPS_PROXY 环境变量。",
-                      file=sys.stderr)
-            sys.exit(1)
-        data = json.loads(body[:-3])
+        # curl can truncate an output file on retry, but cannot rewind stdout.
+        with tempfile.TemporaryDirectory() as tmp:
+            response_path = os.path.join(tmp, "manifest.json")
+            body, err = curl(url, out=response_path)
+            code = body[-3:].decode()
+            if code != "200":
+                print(f"  manifest page {page+1}: HTTP {code} {err}", file=sys.stderr)
+                if code in ("401", "403"):
+                    print(f"  cookie 已失效，或 UA 与导出 cookie 的浏览器不一致（当前 UA: {UA}）。\n"
+                          "  重新导出 cookie；Chrome 刚升级过就先重启 Chrome 再导出；"
+                          "不是 Chrome 的话用 --ua 传入浏览器控制台里 navigator.userAgent 的值。", file=sys.stderr)
+                elif code == "000":
+                    print("  请求未完成或传输失败，请查看上面的 curl 错误。需要代理时先设置 HTTPS_PROXY 环境变量。",
+                          file=sys.stderr)
+                sys.exit(1)
+            with open(response_path, "rb") as f:
+                data = json.load(f)
         batch = data.get("assets", [])
         all_assets += batch
         page += 1
@@ -207,7 +211,7 @@ def fetch_prompts(items):
             found = 0
             for it in todo[conv]:
                 it["gen"] = gen_info(msgs.get(parent.get(it["resp"]), {}))
-                found += bool(it["gen"])
+                found += bool(it["gen"].get("prompt"))
             return found
         except (AttributeError, TypeError):  # unexpected response shape: skip this conversation
             return 0
@@ -318,7 +322,6 @@ def main(argv=None):
     ap.add_argument("--dest", default=DEST, help="下载目录（默认 %(default)s）")
     ap.add_argument("--ua", help="导出 cookie 的浏览器的 UA（默认按本机 Chrome 版本生成）")
     ap.add_argument("--workers", type=int, default=WORKERS, help="并发数（默认 %(default)s）")
-    ap.add_argument("--meta-only", action="store_true", help="联网刷新清单并重建 metadata.json，不下载媒体")
     ap.add_argument("--prompts", action="store_true",
                     help="到生成文件的来源对话里查提示词等参数（每段对话最多 2 个请求，复用已保存参数）")
     args = ap.parse_args(argv)
@@ -341,10 +344,8 @@ def main(argv=None):
     for it in items:
         it["gen"] = {**cache.get(it["id"], {}),
                      **{k: v for k, v in it["gen"].items() if v is not None and v != ""}}
-    failures = 0
     try:
-        if not args.meta_only:
-            failures = download_all(items, args.workers)
+        failures = download_all(items, args.workers)
         if args.prompts:
             fetch_prompts(items)
     finally:  # also on Ctrl-C or an error: keep what this run already found

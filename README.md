@@ -47,8 +47,6 @@ Run these commands from the project directory:
 ~~~bash
 uv run main.py
 uv run main.py --prompts
-uv run main.py --meta-only
-uv run main.py --meta-only --prompts
 uv run main.py --help
 ~~~
 
@@ -56,10 +54,8 @@ uv run main.py --help
 | --- | --- |
 | No options | Fetch the asset list, download media, and write metadata. |
 | `--prompts` | Also look up generation settings for eligible downloaded files. |
-| `--meta-only` | Fetch the asset list and rebuild metadata without downloading media. |
-| `--meta-only --prompts` | Rebuild metadata and look up generation settings for eligible files already on disk. |
 
-**`--meta-only` still accesses Grok and requires valid cookies.** It is not an offline scan of a directory.
+Every run downloads missing or incomplete media, skips complete local files, and updates `metadata.json`.
 
 Without uv, use `python3 main.py` on macOS or `python main.py` on Windows with the same options. Some help and status messages are currently in Chinese.
 
@@ -71,8 +67,7 @@ Without uv, use `python3 main.py` on macOS or `python main.py` on Windows with t
 | `--dest PATH` | `output/` in the project directory | Destination directory. |
 | `--ua TEXT` | Detected local Chrome User-Agent | User-Agent of the browser that exported the cookies. |
 | `--workers N` | `6` | Positive number of concurrent media downloads. |
-| `--meta-only` | Disabled | Rebuild metadata without downloading media. |
-| `--prompts` | Disabled | Retrieve missing generation metadata from source conversations. |
+| `--prompts` | Disabled | Look up generation metadata when neither the asset list nor the local cache provides any. |
 
 The default paths are relative to the script, not the current working directory. Custom paths support `~`.
 
@@ -110,7 +105,7 @@ If migrating from a version that used `~/Downloads/grok-imagine`, move that dire
 
 The asset listing may omit generation settings. With `--prompts`, the script looks up the originating user message through the source conversation's `response-node` and `load-responses` endpoints.
 
-- Only complete local generated files with source conversation/response IDs and no cached generation metadata are eligible. Uploaded references are excluded.
+- Only complete local generated files with source conversation/response IDs and no generation metadata from either the asset list or the local cache are eligible. Files with any generation metadata are skipped even if their prompt is missing. Uploaded references are excluded.
 - Lookups are grouped by conversation, with up to two read requests per conversation and at most three conversations processed concurrently.
 - HTTP 401, 403, or 429 stops further lookups without retrying those requests. Requests already in flight may finish. Downloaded files and generation metadata already found are retained.
 - Deleted or inaccessible conversations, or changes to Grok's response format, can leave generation metadata unavailable.
@@ -154,7 +149,9 @@ uv run main.py
 
 `main.py` is the entry point; `download.py` contains the implementation.
 
-The current project version is **0.1.0**. Offline tests cover downloader behavior with simulated responses; they do not establish current Grok compatibility or complete account coverage. Live-account downloads and end-to-end checks on both target platforms have not been completed for this release.
+The current project version is **0.1.0**. Offline tests cover downloader behavior with simulated responses; they do not establish current Grok compatibility or complete account coverage.
+
+On 2026-10-31, a live-account smoke test on Windows successfully fetched one asset-list page and downloaded one generated MP4. Its byte count matched the API-reported size, and its metadata was saved. The same video's prompt and generation settings were also retrieved through two conversation-read requests and saved to `metadata.json`. Full pagination, full-account downloads, and end-to-end CLI checks on both target platforms remain unverified with a live account.
 
 Run the offline regression tests without Grok credentials:
 

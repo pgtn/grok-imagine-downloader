@@ -67,6 +67,17 @@ class DownloaderTests(unittest.TestCase):
     def page(assets, token=None):
         return json.dumps({"assets": assets, "nextPageToken": token}).encode() + b"200", ""
 
+    @staticmethod
+    def serve_pages(pages):
+        pages = iter(pages)
+
+        def serve(url, out):
+            body, error = next(pages)
+            Path(out).write_bytes(body[:-3])
+            return body[-3:], error
+
+        return serve
+
     def test_curl_rejects_partial_http_200_on_transport_failure(self):
         self.process.side_effect = None
         for exit_code in (18, 28):
@@ -95,7 +106,7 @@ class DownloaderTests(unittest.TestCase):
     def test_manifest_fetches_beyond_two_hundred_pages(self):
         pages = [self.page([{"assetId": str(n)}], str(n + 1) if n < 201 else None)
                  for n in range(202)]
-        request = self.patch(downloader, "curl", side_effect=pages)
+        request = self.patch(downloader, "curl", side_effect=self.serve_pages(pages))
         assets = downloader.fetch_manifest()
         self.assertEqual(len(assets), 202)
         self.assertEqual(assets[-1]["assetId"], "201")
@@ -108,9 +119,30 @@ class DownloaderTests(unittest.TestCase):
             "empty": [self.page([], "next")],
         }
         for name, pages in cases.items():
-            with self.subTest(name=name), mock.patch.object(downloader, "curl", side_effect=pages):
+            with self.subTest(name=name), mock.patch.object(downloader, "curl", side_effect=self.serve_pages(pages)):
                 with self.assertRaises(RuntimeError):
                     downloader.fetch_manifest()
+
+    def test_manifest_retry_discards_partial_response(self):
+        assets = [{"assetId": "retried"}]
+        payload = json.dumps({"assets": assets}).encode()
+
+        def transfer(cmd, **kwargs):
+            out = cmd[cmd.index("-o") + 1]
+            partial = payload[:5]
+            if cmd[cmd.index("--retry") + 1] == "0":
+                return subprocess.CompletedProcess(cmd, 28, partial + b"200", b"timeout")
+            # curl can reset a file between attempts, but stdout keeps the partial body.
+            if out == "-":
+                body = partial + payload + b"200"
+            else:
+                Path(out).write_bytes(partial)
+                Path(out).write_bytes(payload)
+                body = b"200"
+            return subprocess.CompletedProcess(cmd, 0, body, b"timeout on first attempt")
+
+        self.process.side_effect = transfer
+        self.assertEqual(downloader.fetch_manifest(), assets)
 
     def test_complete_requires_a_regular_file_and_valid_size(self):
         directory = self.dest / "directory"
@@ -191,18 +223,35 @@ class DownloaderTests(unittest.TestCase):
         self.assertEqual(api.call_args_list[1].args[1], {"responseIds": ["human"]})
         self.assertEqual(first["gen"]["prompt"], "A quiet sea")
         self.assertEqual(second["gen"], first["gen"])
+        self.assertIn("prompts: found 2/2", sys.stdout.getvalue())
 
-    def test_main_reuses_prompt_cache_in_metadata_only_mode(self):
+    def test_prompt_lookup_does_not_count_generation_settings_without_a_prompt(self):
+        item = self.item(payload=b"data")
+        self.patch(downloader, "chat_api", side_effect=[
+            ("200", {"responseNodes": [
+                {"responseId": item["resp"], "parentResponseId": "human"},
+            ]}),
+            ("200", {"responses": [{"responseId": "human", "mediaGenInput": {
+                "videoGen": {"modelName": "example-model"}
+            }}]}),
+        ])
+
+        downloader.fetch_prompts([item])
+
+        self.assertIsNone(item["gen"]["prompt"])
+        self.assertEqual(item["gen"]["model"], "example-model")
+        self.assertIn("prompts: found 0/1", sys.stdout.getvalue())
+
+    def test_main_reuses_prompt_cache_and_skips_existing_files(self):
         item = self.item(payload=b"data")
         downloader.write_metadata([], [{
             "id": item["id"], "file": item["rel"], "size": 4,
             "genType": "videoGen", "prompt": "Cached prompt", "model": "example-model",
         }])
         self.patch(downloader, "fetch_manifest", return_value=[self.asset()])
-        downloads = self.patch(downloader, "download_all")
         lookup = self.patch(downloader, "chat_api", side_effect=AssertionError("Cache was ignored"))
-        downloader.main(["--meta-only", "--prompts"])
-        downloads.assert_not_called()
+        downloader.main(["--prompts"])
+        self.process.assert_not_called()
         lookup.assert_not_called()
         self.assertEqual(self.metadata()[0]["prompt"], "Cached prompt")
         self.assertEqual(self.metadata()[0]["model"], "example-model")
@@ -236,11 +285,10 @@ class DownloaderTests(unittest.TestCase):
             "modelName": "new-model", "prompt": None, "aspectRatio": "",
         }}
         self.patch(downloader, "fetch_manifest", return_value=[asset])
-        downloads = self.patch(downloader, "download_all")
 
-        downloader.main(["--meta-only"])
+        downloader.main([])
 
-        downloads.assert_not_called()
+        self.process.assert_not_called()
         self.assertEqual(self.metadata(), [{
             "file": item["rel"], "id": item["id"], "mime": "video/mp4",
             "created": "2026-01-02T03:04:05Z", "size": 4, "w": None, "h": None,
@@ -259,7 +307,7 @@ class DownloaderTests(unittest.TestCase):
             with self.subTest(original=original):
                 path.write_text(original, encoding="utf-8")
                 with self.assertRaises(RuntimeError):
-                    downloader.main(["--meta-only"])
+                    downloader.main([])
                 self.assertEqual(path.read_text(encoding="utf-8"), original)
         writer.assert_not_called()
 
