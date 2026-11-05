@@ -13,6 +13,20 @@ UA = ""  # set in main(): --ua, else built from the local Chrome version
 GEN_KEYS = ("genType", "prompt", "model", "aspectRatio", "duration", "resolution")
 
 EXT = {"video/mp4": ".mp4", "image/jpeg": ".jpg", "image/jpg": ".jpg", "image/png": ".png"}
+RETRY_CODES = ("429", "500", "502", "503", "504")
+MANIFEST_BACKOFF = (5, 10, 20, 40, 60)  # seconds between manifest retries after curl's own quick retries
+PAGE_DELAY = 0.5  # pause between manifest pages to stay under Grok's rate limit
+KINDS = ("video", "image", "uploads")  # output subdirectories chosen in plan(); --only filters on them
+
+
+def parse_kinds(value):
+    """argparse type for --only: comma-separated subset of KINDS."""
+    kinds = {k.strip() for k in value.split(",") if k.strip()}
+    bad = kinds - set(KINDS)
+    if not kinds or bad:
+        raise argparse.ArgumentTypeError(
+            f"invalid kind(s): {', '.join(sorted(bad)) or '(empty)'}; choose from {', '.join(KINDS)}")
+    return kinds
 
 # Chrome's reduced UA: only the major version changes, the platform part is frozen.
 UA_FMT = "Mozilla/5.0 ({}) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/{}.0.0.0 Safari/537.36"
@@ -69,8 +83,14 @@ def fetch_manifest():
         # curl can truncate an output file on retry, but cannot rewind stdout.
         with tempfile.TemporaryDirectory() as tmp:
             response_path = os.path.join(tmp, "manifest.json")
-            body, err = curl(url, out=response_path)
-            code = body[-3:].decode()
+            for wait in MANIFEST_BACKOFF + (None,):
+                body, err = curl(url, out=response_path)
+                code = body[-3:].decode()
+                if code not in RETRY_CODES or wait is None:
+                    break
+                # Large libraries need 100+ pages; Grok answers bursts with 429. Back off instead of aborting.
+                print(f"  manifest page {page+1}: HTTP {code}, retrying in {wait}s", file=sys.stderr)
+                time.sleep(wait)
             if code != "200":
                 print(f"  manifest page {page+1}: HTTP {code} {err}", file=sys.stderr)
                 if code in ("401", "403"):
@@ -95,6 +115,7 @@ def fetch_manifest():
         if token in seen_tokens:
             raise RuntimeError("Asset listing repeated a page token; listing is incomplete")
         seen_tokens.add(token)
+        time.sleep(PAGE_DELAY)
     return all_assets
 
 
@@ -324,6 +345,9 @@ def main(argv=None):
     ap.add_argument("--workers", type=int, default=WORKERS, help="并发数（默认 %(default)s）")
     ap.add_argument("--prompts", action="store_true",
                     help="到生成文件的来源对话里查提示词等参数（每段对话最多 2 个请求，复用已保存参数）")
+    ap.add_argument("--only", type=parse_kinds, metavar="KINDS",
+                    help="Download only these kinds, comma-separated: " + ", ".join(KINDS)
+                         + " (e.g. --only video). Default: all")
     args = ap.parse_args(argv)
     if args.workers < 1:
         ap.error("--workers must be at least 1")
@@ -339,6 +363,10 @@ def main(argv=None):
     print(f"UA: {UA}")
     print("Fetching manifest...")
     items = plan(fetch_manifest())
+    if args.only:
+        total = len(items)
+        items = [it for it in items if it["rel"].split("/")[0] in args.only]
+        print(f"--only {','.join(sorted(args.only))}: {len(items)} / {total} assets")
     old = load_metadata()
     cache = {r["id"]: {k: r[k] for k in GEN_KEYS if k in r} for r in old if r.get("genType")}
     for it in items:

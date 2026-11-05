@@ -68,6 +68,7 @@ Without uv, use `python3 main.py` on macOS or `python main.py` on Windows with t
 | `--ua TEXT` | Detected local Chrome User-Agent | User-Agent of the browser that exported the cookies. |
 | `--workers N` | `6` | Positive number of concurrent media downloads. |
 | `--prompts` | Disabled | Look up generation metadata when neither the asset list nor the local cache provides any. |
+| `--only KINDS` | All | Download only the given kinds, comma-separated: `video`, `image`, `uploads` (e.g. `--only video`). |
 
 The default paths are relative to the script, not the current working directory. Custom paths support `~`.
 

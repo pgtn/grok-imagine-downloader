@@ -123,6 +123,35 @@ class DownloaderTests(unittest.TestCase):
                 with self.assertRaises(RuntimeError):
                     downloader.fetch_manifest()
 
+    def test_manifest_backs_off_on_rate_limit_then_continues(self):
+        limited = (b"429", "curl: (22) The requested URL returned error: 429")
+        pages = [limited, limited, self.page([{"assetId": "a"}], "t"), self.page([{"assetId": "b"}])]
+        self.patch(downloader, "curl", side_effect=self.serve_pages_or_errors(pages))
+        self.assertEqual([a["assetId"] for a in downloader.fetch_manifest()], ["a", "b"])
+        waits = [c.args[0] for c in downloader.time.sleep.call_args_list]
+        self.assertEqual(waits[:2], list(downloader.MANIFEST_BACKOFF[:2]))
+
+    def test_manifest_exits_when_rate_limit_persists(self):
+        limited = (b"429", "curl: (22) The requested URL returned error: 429")
+        pages = [limited] * (len(downloader.MANIFEST_BACKOFF) + 1)
+        request = self.patch(downloader, "curl", side_effect=self.serve_pages_or_errors(pages))
+        with self.assertRaises(SystemExit) as result, mock.patch("sys.stderr", io.StringIO()):
+            downloader.fetch_manifest()
+        self.assertEqual(result.exception.code, 1)
+        self.assertEqual(request.call_count, len(downloader.MANIFEST_BACKOFF) + 1)
+
+    @staticmethod
+    def serve_pages_or_errors(pages):
+        pages = iter(pages)
+
+        def serve(url, out):
+            body, error = next(pages)
+            if body[-3:] == b"200":
+                Path(out).write_bytes(body[:-3])
+            return body[-3:], error
+
+        return serve
+
     def test_manifest_retry_discards_partial_response(self):
         assets = [{"assetId": "retried"}]
         payload = json.dumps({"assets": assets}).encode()
@@ -310,6 +339,36 @@ class DownloaderTests(unittest.TestCase):
                     downloader.main([])
                 self.assertEqual(path.read_text(encoding="utf-8"), original)
         writer.assert_not_called()
+
+    def test_main_only_downloads_selected_kinds(self):
+        image = self.asset("img")
+        image.update(mimeType="image/jpeg", key="img.jpg")
+        upload = self.asset("up")
+        upload.update(mimeType="image/jpeg", key="up.jpg", fileSource="SELF_UPLOAD_FILE_SOURCE")
+        self.patch(downloader, "fetch_manifest", return_value=[self.asset("vid"), image, upload])
+        fetched = []
+
+        def transfer(url, out):
+            fetched.append(url.rsplit("/", 1)[-1])
+            Path(out).write_bytes(b"data")
+            return b"200", ""
+
+        self.patch(downloader, "curl", side_effect=transfer)
+        for only, expected in (("video", ["vid.mp4"]), ("image,uploads", ["img.jpg", "up.jpg"])):
+            with self.subTest(only=only):
+                fetched.clear()
+                downloader.main(["--only", only, "--workers", "1"])
+                self.assertEqual(sorted(fetched), expected)
+        self.assertEqual({row["id"] for row in self.metadata()}, {"vid", "img", "up"})
+
+    def test_main_rejects_unknown_only_kind_before_fetching(self):
+        listing = self.patch(downloader, "fetch_manifest")
+        for only in ("videos", "", "video,audio"):
+            with self.subTest(only=only), self.assertRaises(SystemExit) as result, \
+                    mock.patch("sys.stderr", io.StringIO()):
+                downloader.main(["--only", only])
+            self.assertEqual(result.exception.code, 2)
+        listing.assert_not_called()
 
     def test_main_rejects_nonpositive_workers_before_fetching(self):
         listing = self.patch(downloader, "fetch_manifest")
