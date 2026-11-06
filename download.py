@@ -19,6 +19,10 @@ PAGE_DELAY = 0.5  # pause between manifest pages to stay under Grok's rate limit
 IMAGINE_KINDS = ("video", "image", "uploads")  # output subdirectories plan() picks for the Imagine listing
 CHAT_KIND = "chat"  # files uploaded in chats: a separate listing without workspaceKind
 KINDS = IMAGINE_KINDS + (CHAT_KIND,)  # --only filters on these
+# A listing returns only the first page of assets that tie on the sort key: 24,000+ chat uploads
+# share one createTime, and ORDER_BY_CREATE_TIME showed 60 of them. Each listing is read in every
+# order and merged by assetId.
+SORT_ORDERS = ("ORDER_BY_CREATE_TIME", "ORDER_BY_NAME", "ORDER_BY_CONTENT_SIZE")
 
 
 def parse_kinds(value):
@@ -74,14 +78,29 @@ def curl(url, out=None, timeout=180, data=None, retry=2):
     return r.stdout, err
 
 
-def fetch_manifest(workspace_kind="WORKSPACE_KIND_IMAGINE_ALL", allow_empty_pages=False):
+def fetch_listing(workspace_kind="WORKSPACE_KIND_IMAGINE_ALL", allow_empty_pages=False):
+    """Read one listing in every SORT_ORDERS order; return the assets merged by assetId."""
+    merged = {}
+    for order_by in SORT_ORDERS:
+        print(f" {order_by}:")
+        assets = fetch_manifest(workspace_kind=workspace_kind, allow_empty_pages=allow_empty_pages,
+                                order_by=order_by)
+        before = len(merged)
+        for a in assets:
+            merged.setdefault(a["assetId"], a)
+        print(f" {order_by}: {len(assets)} listed, {len(merged) - before} new, {len(merged)} unique")
+    return list(merged.values())
+
+
+def fetch_manifest(workspace_kind="WORKSPACE_KIND_IMAGINE_ALL", allow_empty_pages=False,
+                   order_by="ORDER_BY_CREATE_TIME"):
     """Page through /rest/assets until nextPageToken runs out.
 
     workspace_kind=None lists the chat file library (grok.com/files). That listing returns
     empty pages that still carry a next page token, so allow_empty_pages accepts them."""
     all_assets, token, page, seen_tokens = [], "", 0, set()
     while True:
-        url = "https://grok.com/rest/assets?pageSize=100&orderBy=ORDER_BY_CREATE_TIME"
+        url = "https://grok.com/rest/assets?pageSize=100&orderBy=" + order_by
         if workspace_kind:
             url += "&workspaceKind=" + workspace_kind
         if token:
@@ -372,11 +391,11 @@ def main(argv=None):
     items = []
     if kinds & set(IMAGINE_KINDS):  # skip each listing that --only does not need
         print("Fetching manifest...")
-        items = plan(fetch_manifest())
+        items = plan(fetch_listing())
     if CHAT_KIND in kinds:
         print("Fetching chat file manifest...")
         listed = {it["id"] for it in items}
-        items += [it for it in plan(fetch_manifest(workspace_kind=None, allow_empty_pages=True), sub=CHAT_KIND)
+        items += [it for it in plan(fetch_listing(workspace_kind=None, allow_empty_pages=True), sub=CHAT_KIND)
                   if it["id"] not in listed]
     if args.only:
         total = len(items)

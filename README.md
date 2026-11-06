@@ -20,6 +20,7 @@ This is an unofficial tool using Grok's web endpoints. The available assets, res
 The download scope is the assets returned for your account by `/rest/assets` with `workspaceKind=WORKSPACE_KIND_IMAGINE_ALL`, plus the chat file listing that `/rest/assets` returns without `workspaceKind` (the files shown at <https://grok.com/files>). The tool follows pagination, skips entries marked deleted, and downloads the listed generated media and uploaded references.
 
 - This asset listing is not a precise export of Saved or Liked posts. It does not guarantee access to every historical asset, variant, HD version, or step in a video extension chain. Deleted or unlisted assets cannot be newly retrieved by this tool.
+- Each listing is read in three sort orders (create time, name, content size) and merged by asset ID. Grok returns only the first page of assets that share a sort key, and thousands of uploads can share one creation time.
 - `--prompts` makes a best-effort lookup in source conversations for eligible complete local files. It does not guarantee a prompt for every file.
 - The project focuses on local downloads and metadata. It does not provide a gallery UI, generate media, modify or delete cloud content, or automate browser sign-in.
 

@@ -134,6 +134,26 @@ class DownloaderTests(unittest.TestCase):
                 self.assertRaises(RuntimeError):
             downloader.fetch_manifest(workspace_kind=None, allow_empty_pages=True)
 
+    def test_listing_merges_every_sort_order_by_asset_id(self):
+        # Each order shows a different slice of assets that tie on its sort key.
+        by_order = {
+            "ORDER_BY_CREATE_TIME": [{"assetId": "a"}, {"assetId": "b"}],
+            "ORDER_BY_NAME": [{"assetId": "b"}, {"assetId": "c"}],
+            "ORDER_BY_CONTENT_SIZE": [{"assetId": "d"}, {"assetId": "a"}],
+        }
+        listing = self.patch(downloader, "fetch_manifest",
+                             side_effect=lambda order_by, **_: by_order[order_by])
+        assets = downloader.fetch_listing(workspace_kind=None, allow_empty_pages=True)
+        self.assertEqual([a["assetId"] for a in assets], ["a", "b", "c", "d"])
+        self.assertEqual([c.kwargs for c in listing.call_args_list],
+                         [{"workspace_kind": None, "allow_empty_pages": True, "order_by": order}
+                          for order in downloader.SORT_ORDERS])
+
+    def test_manifest_requests_the_given_sort_order(self):
+        request = self.patch(downloader, "curl", side_effect=self.serve_pages([self.page([{"assetId": "a"}])]))
+        downloader.fetch_manifest(order_by="ORDER_BY_NAME")
+        self.assertIn("orderBy=ORDER_BY_NAME", request.call_args.args[0])
+
     def test_manifest_backs_off_on_rate_limit_then_continues(self):
         limited = (b"429", "curl: (22) The requested URL returned error: 429")
         pages = [limited, limited, self.page([{"assetId": "a"}], "t"), self.page([{"assetId": "b"}])]
@@ -378,7 +398,7 @@ class DownloaderTests(unittest.TestCase):
         chat = self.asset("chat")
         chat.update(mimeType="image/png", key="chat.png", fileSource="SELF_UPLOAD_FILE_SOURCE")
         listings = {"WORKSPACE_KIND_IMAGINE_ALL": [self.asset("vid"), upload], None: [chat, upload]}
-        listing = self.patch(downloader, "fetch_manifest",
+        listing = self.patch(downloader, "fetch_listing",
                              side_effect=lambda workspace_kind="WORKSPACE_KIND_IMAGINE_ALL", **_: listings[workspace_kind])
         fetched = []
 
