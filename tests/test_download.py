@@ -123,6 +123,17 @@ class DownloaderTests(unittest.TestCase):
                 with self.assertRaises(RuntimeError):
                     downloader.fetch_manifest()
 
+    def test_chat_manifest_omits_workspace_kind_and_accepts_empty_pages(self):
+        pages = [self.page([{"assetId": "a"}], "t1"), self.page([], "t2"), self.page([{"assetId": "b"}])]
+        request = self.patch(downloader, "curl", side_effect=self.serve_pages(pages))
+        assets = downloader.fetch_manifest(workspace_kind=None, allow_empty_pages=True)
+        self.assertEqual([a["assetId"] for a in assets], ["a", "b"])
+        self.assertTrue(all("workspaceKind" not in c.args[0] for c in request.call_args_list))
+        repeated = [self.page([], "a"), self.page([], "a")]
+        with mock.patch.object(downloader, "curl", side_effect=self.serve_pages(repeated)), \
+                self.assertRaises(RuntimeError):
+            downloader.fetch_manifest(workspace_kind=None, allow_empty_pages=True)
+
     def test_manifest_backs_off_on_rate_limit_then_continues(self):
         limited = (b"429", "curl: (22) The requested URL returned error: 429")
         pages = [limited, limited, self.page([{"assetId": "a"}], "t"), self.page([{"assetId": "b"}])]
@@ -360,6 +371,41 @@ class DownloaderTests(unittest.TestCase):
                 downloader.main(["--only", only, "--workers", "1"])
                 self.assertEqual(sorted(fetched), expected)
         self.assertEqual({row["id"] for row in self.metadata()}, {"vid", "img", "up"})
+
+    def test_main_saves_chat_files_separately_and_fetches_only_needed_listings(self):
+        upload = self.asset("up")
+        upload.update(mimeType="image/jpeg", key="up.jpg", fileSource="SELF_UPLOAD_FILE_SOURCE")
+        chat = self.asset("chat")
+        chat.update(mimeType="image/png", key="chat.png", fileSource="SELF_UPLOAD_FILE_SOURCE")
+        listings = {"WORKSPACE_KIND_IMAGINE_ALL": [self.asset("vid"), upload], None: [chat, upload]}
+        listing = self.patch(downloader, "fetch_manifest",
+                             side_effect=lambda workspace_kind="WORKSPACE_KIND_IMAGINE_ALL", **_: listings[workspace_kind])
+        fetched = []
+
+        def transfer(url, out):
+            fetched.append(url.rsplit("/", 1)[-1])
+            Path(out).write_bytes(b"data")
+            return b"200", ""
+
+        self.patch(downloader, "curl", side_effect=transfer)
+        for args, kinds_listed, expected in (
+            # Without the Imagine listing, an asset listed by both is saved as a chat file.
+            (["--only", "chat"], [None], ["chat.png", "up.jpg"]),
+            (["--only", "video"], ["WORKSPACE_KIND_IMAGINE_ALL"], ["vid.mp4"]),
+            ([], ["WORKSPACE_KIND_IMAGINE_ALL", None], ["chat.png", "up.jpg", "vid.mp4"]),
+        ):
+            with self.subTest(args=args):
+                listing.reset_mock()
+                fetched.clear()
+                for path in self.dest.rglob("*.*"):
+                    path.unlink()
+                downloader.main(args + ["--workers", "1"])
+                self.assertEqual([c.kwargs.get("workspace_kind", "WORKSPACE_KIND_IMAGINE_ALL")
+                                  for c in listing.call_args_list], kinds_listed)
+                self.assertEqual(sorted(fetched), expected)
+        files = {row["id"]: row["file"] for row in self.metadata()}
+        self.assertTrue(files["chat"].startswith("chat/"))
+        self.assertTrue(files["up"].startswith("uploads/"))  # listed by both: stays with Imagine
 
     def test_main_rejects_unknown_only_kind_before_fetching(self):
         listing = self.patch(downloader, "fetch_manifest")

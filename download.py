@@ -16,7 +16,9 @@ EXT = {"video/mp4": ".mp4", "image/jpeg": ".jpg", "image/jpg": ".jpg", "image/pn
 RETRY_CODES = ("429", "500", "502", "503", "504")
 MANIFEST_BACKOFF = (5, 10, 20, 40, 60)  # seconds between manifest retries after curl's own quick retries
 PAGE_DELAY = 0.5  # pause between manifest pages to stay under Grok's rate limit
-KINDS = ("video", "image", "uploads")  # output subdirectories chosen in plan(); --only filters on them
+IMAGINE_KINDS = ("video", "image", "uploads")  # output subdirectories plan() picks for the Imagine listing
+CHAT_KIND = "chat"  # files uploaded in chats: a separate listing without workspaceKind
+KINDS = IMAGINE_KINDS + (CHAT_KIND,)  # --only filters on these
 
 
 def parse_kinds(value):
@@ -72,12 +74,16 @@ def curl(url, out=None, timeout=180, data=None, retry=2):
     return r.stdout, err
 
 
-def fetch_manifest():
-    """Page through /rest/assets until nextPageToken runs out."""
+def fetch_manifest(workspace_kind="WORKSPACE_KIND_IMAGINE_ALL", allow_empty_pages=False):
+    """Page through /rest/assets until nextPageToken runs out.
+
+    workspace_kind=None lists the chat file library (grok.com/files). That listing returns
+    empty pages that still carry a next page token, so allow_empty_pages accepts them."""
     all_assets, token, page, seen_tokens = [], "", 0, set()
     while True:
-        url = ("https://grok.com/rest/assets?pageSize=100"
-               "&orderBy=ORDER_BY_CREATE_TIME&workspaceKind=WORKSPACE_KIND_IMAGINE_ALL")
+        url = "https://grok.com/rest/assets?pageSize=100&orderBy=ORDER_BY_CREATE_TIME"
+        if workspace_kind:
+            url += "&workspaceKind=" + workspace_kind
         if token:
             url += "&pageToken=" + urllib.parse.quote(token, safe="")
         # curl can truncate an output file on retry, but cannot rewind stdout.
@@ -110,7 +116,7 @@ def fetch_manifest():
         token = data.get("nextPageToken") or ""
         if not token:
             break
-        if not batch:
+        if not batch and not allow_empty_pages:
             raise RuntimeError("Asset listing returned an empty page with a next page token; listing is incomplete")
         if token in seen_tokens:
             raise RuntimeError("Asset listing repeated a page token; listing is incomplete")
@@ -137,8 +143,9 @@ def gen_info(a):
     }
 
 
-def plan(assets):
-    """Map each asset to a destination path; dedupe filename collisions."""
+def plan(assets, sub=None):
+    """Map each asset to a destination path; dedupe filename collisions.
+    sub forces one output subdirectory; by default it follows fileSource and mimeType."""
     used, seen, items = set(), set(), []
     for a in assets:
         aid = a["assetId"]
@@ -148,19 +155,19 @@ def plan(assets):
         mime = a["mimeType"]
         ext = EXT.get(mime) or os.path.splitext(a.get("name", ""))[1] or ".bin"
         gen = a.get("fileSource") == "IMAGINE_GENERATED_FILE_SOURCE"
-        sub = "uploads" if not gen else ("video" if mime == "video/mp4" else "image")
+        kind = sub or ("uploads" if not gen else ("video" if mime == "video/mp4" else "image"))
         ts = a["createTime"].replace("-", "").replace(":", "").replace("T", "-")[:15]
         n = 8
         while True:
             name = f"{ts}_{aid[:n]}{ext}"
-            rel = f"{sub}/{name}"  # always "/", so metadata.json is the same on Mac and Windows
+            rel = f"{kind}/{name}"  # always "/", so metadata.json is the same on Mac and Windows
             if rel not in used or n >= len(aid):
                 break
             n += 4
         used.add(rel)
         items.append({
             "url": "https://assets.grok.com/" + a["key"],
-            "path": os.path.join(DEST, sub, name),
+            "path": os.path.join(DEST, kind, name),
             "rel": rel,
             "size": int(a.get("sizeBytes") or 0),
             "id": aid,
@@ -361,8 +368,16 @@ def main(argv=None):
     if not UA:
         sys.exit("找不到本机 Chrome：用 --ua 传入导出 cookie 的浏览器的 UA（浏览器控制台运行 navigator.userAgent）")
     print(f"UA: {UA}")
-    print("Fetching manifest...")
-    items = plan(fetch_manifest())
+    kinds = args.only or set(KINDS)
+    items = []
+    if kinds & set(IMAGINE_KINDS):  # skip each listing that --only does not need
+        print("Fetching manifest...")
+        items = plan(fetch_manifest())
+    if CHAT_KIND in kinds:
+        print("Fetching chat file manifest...")
+        listed = {it["id"] for it in items}
+        items += [it for it in plan(fetch_manifest(workspace_kind=None, allow_empty_pages=True), sub=CHAT_KIND)
+                  if it["id"] not in listed]
     if args.only:
         total = len(items)
         items = [it for it in items if it["rel"].split("/")[0] in args.only]

@@ -9,6 +9,7 @@ This is an unofficial tool using Grok's web endpoints. The available assets, res
 ## Features
 
 - Paginate through the Imagine asset listing and download generated videos, images, and uploaded references.
+- Download files uploaded in chats (the Files page) from a separate listing into `chat/`.
 - Download concurrently, retry failed transfers, and check file sizes when the API provides them.
 - Skip files already present with the expected size, so you can rerun the command after an interruption.
 - Write a UTF-8 `metadata.json` index and preserve generation metadata for valid local files.
@@ -16,7 +17,7 @@ This is an unofficial tool using Grok's web endpoints. The available assets, res
 
 ## Scope
 
-The download scope is the assets returned for your account by `/rest/assets` with `workspaceKind=WORKSPACE_KIND_IMAGINE_ALL`. The tool follows pagination, skips entries marked deleted, and downloads the listed generated media and uploaded references.
+The download scope is the assets returned for your account by `/rest/assets` with `workspaceKind=WORKSPACE_KIND_IMAGINE_ALL`, plus the chat file listing that `/rest/assets` returns without `workspaceKind` (the files shown at <https://grok.com/files>). The tool follows pagination, skips entries marked deleted, and downloads the listed generated media and uploaded references.
 
 - This asset listing is not a precise export of Saved or Liked posts. It does not guarantee access to every historical asset, variant, HD version, or step in a video extension chain. Deleted or unlisted assets cannot be newly retrieved by this tool.
 - `--prompts` makes a best-effort lookup in source conversations for eligible complete local files. It does not guarantee a prompt for every file.
@@ -68,7 +69,7 @@ Without uv, use `python3 main.py` on macOS or `python main.py` on Windows with t
 | `--ua TEXT` | Detected local Chrome User-Agent | User-Agent of the browser that exported the cookies. |
 | `--workers N` | `6` | Positive number of concurrent media downloads. |
 | `--prompts` | Disabled | Look up generation metadata when neither the asset list nor the local cache provides any. |
-| `--only KINDS` | All | Download only the given kinds, comma-separated: `video`, `image`, `uploads` (e.g. `--only video`). |
+| `--only KINDS` | All | Download only the given kinds, comma-separated: `video`, `image`, `uploads`, `chat` (e.g. `--only video`). A listing that no selected kind needs is not fetched. |
 
 The default paths are relative to the script, not the current working directory. Custom paths support `~`.
 
@@ -84,6 +85,7 @@ output/
 ├── video/          Generated videos
 ├── image/          Generated images
 ├── uploads/        Uploaded reference media
+├── chat/           Files uploaded in chats
 └── metadata.json   Index of complete local files
 ~~~
 
