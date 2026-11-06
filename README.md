@@ -114,6 +114,22 @@ The asset listing may omit generation settings. With `--prompts`, the script loo
 - HTTP 401, 403, or 429 stops further lookups without retrying those requests. Requests already in flight may finish. Downloaded files and generation metadata already found are retained.
 - Deleted or inaccessible conversations, or changes to Grok's response format, can leave generation metadata unavailable.
 
+## Deleting saved assets from Grok
+
+`delete.py` deletes assets on Grok that are already in the archive, to free Grok file storage. Deletion cannot be undone: Grok's web client has no restore call for either endpoint below.
+
+~~~bash
+python3 delete.py --only chat            # dry run: count and list the targets, send nothing
+python3 delete.py --only chat --yes --limit 5
+python3 delete.py --only chat --yes
+~~~
+
+- Targets are `metadata.json` rows of the `--only` kinds whose local file passes the size check. `--only` is required.
+- By default it sends `DELETE /rest/assets-metadata/{id}`, the call the Files page uses. `--hard` sends `DELETE /rest/assets/{id}`, the call the Imagine page uses. Which one frees storage has not been measured.
+- After each deletion, `GET /rest/assets/{id}` must answer 404; otherwise the run stops. A 404 on the deletion itself is recorded as already gone. HTTP 401/403 or any other unexpected status stops the run; 429 and 5xx are retried with backoff.
+- Each deleted asset is appended to `deleted.jsonl` in the archive. A later run skips the assets in it.
+- Assets are deleted one at a time.
+
 ## Reliability and limitations
 
 - Downloads go to a `.part` file and are renamed after a successful transfer and size check. Failed files are retried; rerunning skips complete files and restarts incomplete transfers. HTTP Range resume is not implemented.
@@ -151,7 +167,7 @@ uv run main.py
 
 ## Development
 
-`main.py` is the entry point; `download.py` contains the implementation.
+`main.py` is the entry point; `download.py` contains the implementation. `delete.py` deletes saved assets on Grok.
 
 The current project version is **0.1.0**. Offline tests cover downloader behavior with simulated responses; they do not establish current Grok compatibility or complete account coverage.
 

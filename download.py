@@ -58,12 +58,16 @@ def chrome_ua():
     return UA_FMT.format(UA_OS[sys.platform], major) if major.isdigit() else None
 
 
-def curl(url, out=None, timeout=180, data=None, retry=2):
+def curl(url, out=None, timeout=180, data=None, retry=2, method=None, headers=()):
     # -f: no body on HTTP errors, so a retried 429/5xx can't leave an error page in front of the real output.
     # No --compressed: older Windows 10 curl.exe is built without zlib and rejects that option.
     cmd = ["curl", "-fsS", "-b", COOKIES, "-A", UA, "-H", "referer: https://grok.com/",
            "--max-time", str(timeout), "--retry", str(retry), "--retry-delay", "2",
            "-w", "%{http_code}", url]
+    if method:
+        cmd += ["-X", method]
+    for h in headers:
+        cmd += ["-H", h]
     if data is not None:  # JSON body via stdin (no Windows command-line length limit) -> POST
         cmd += ["-H", "content-type: application/json", "--data-binary", "@-"]
     cmd += ["-o", out] if out else ["-o", "-"]
