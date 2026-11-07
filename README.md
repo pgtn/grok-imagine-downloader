@@ -22,7 +22,7 @@ The download scope is the assets returned for your account by `/rest/assets` wit
 - This asset listing is not a precise export of Saved or Liked posts. It does not guarantee access to every historical asset, variant, HD version, or step in a video extension chain. Deleted or unlisted assets cannot be newly retrieved by this tool.
 - Each listing is read in three sort orders (create time, name, content size) and merged by asset ID. Grok returns only the first page of assets that share a sort key, and thousands of uploads can share one creation time.
 - `--prompts` makes a best-effort lookup in source conversations for eligible complete local files. It does not guarantee a prompt for every file.
-- The project focuses on local downloads and metadata. It does not provide a gallery UI, generate media, modify or delete cloud content, or automate browser sign-in.
+- The project focuses on local downloads and metadata. It does not provide a gallery UI, generate media, or automate browser sign-in. `main.py` only reads from Grok; deleting cloud content is left to the separate `delete.py`.
 
 ## Requirements
 
@@ -125,7 +125,8 @@ python3 delete.py --only chat --yes
 ~~~
 
 - Targets are `metadata.json` rows of the `--only` kinds whose local file passes the size check. `--only` is required.
-- By default it sends `DELETE /rest/assets-metadata/{id}`, the call the Files page uses. `--hard` sends `DELETE /rest/assets/{id}`, the call the Imagine page uses. Which one frees storage has not been measured.
+- By default it sends `DELETE /rest/assets-metadata/{id}`, the call the Files page uses. `--hard` sends `DELETE /rest/assets/{id}`, the call the Imagine page uses.
+- On 2026-11-08, deleting all chat files (about 25,400) with `--hard` brought `usedStorageBytes` from `/rest/assets/storage-usage` down from the 5 GiB limit to 0. Imagine assets that were not deleted remained listed. The value did not move while the first ~6,800 were deleted, so expect no change until most of the files are gone. Whether the default soft delete frees storage has not been measured.
 - After each deletion, `GET /rest/assets/{id}` must answer 404; otherwise the run stops. A 404 on the deletion itself is recorded as already gone. HTTP 401/403 or any other unexpected status stops the run; 429 and 5xx are retried with backoff.
 - Each deleted asset is appended to `deleted.jsonl` in the archive. A later run skips the assets in it.
 - Assets are deleted one at a time.
